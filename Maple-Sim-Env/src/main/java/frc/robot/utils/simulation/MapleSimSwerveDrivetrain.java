@@ -125,6 +125,10 @@ public class MapleSimSwerveDrivetrain {
                 mapleSimDrive.getDriveTrainSimulatedChassisSpeedsRobotRelative().omegaRadiansPerSecond));
     }
 
+    public  SwerveDriveSimulation getMapleSimDrive(){
+        return this.mapleSimDrive;
+    }
+
     /**
      *
      *

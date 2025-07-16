@@ -10,9 +10,11 @@ public final class Constants {
         public static final int kMotorPort = 0;
         public static final int[] kEncoderPorts = {0, 1};
         public static final boolean kEncoderReversed = false;
-        
+
         // This should be calculated based on your gear reduction and encoder resolution
-        public static final double kDistancePerPulse = (1.0 / 2048.0) * (Units.inchesToMeters(2) * Math.PI) / 10.0; // Example value: (1/2048) * (2in * pi) / 10:1 gearing
+        public static final double kDistancePerPulse = (1.0 / 2048.0)
+                * (Units.inchesToMeters(2) * Math.PI)
+                / 10.0; // Example value: (1/2048) * (2in * pi) / 10:1 gearing
 
         // Control Gains
         public static final double kP = 5.0;
@@ -34,19 +36,20 @@ public final class Constants {
         public static final double kElevatorGearing = 10.0; // 10:1 gearing
         public static final double kCarriageMass = 15.0; // kilograms
         public static final double kElevatorDrumRadius = Units.inchesToMeters(2); // 2 inch radius drum
-        public static final double kMinElevatorHeightMeters = 0.0;
-        public static final double kMaxElevatorHeightMeters = 1.5;
+        public static final double kMinElevatorHeightMeters = 0.9525;
+        public static final double kMaxElevatorHeightMeters = 0.9525 * 2;
     }
 
     public static final class Arm {
         public static final int kMotorPort = 1;
         public static final int[] kEncoderPorts = {2, 3};
         public static final boolean kEncoderReversed = false;
-        
-        // This should be calculated based on your gear reduction and encoder resolution
-        public static final double kDistancePerPulse = 360.0 / (2048.0 * 100.0); // Example: (360 deg) / (2048 pulses * 100:1 gearing)
 
-        public static final double kArmLength = 0.75; // meters
+        // This should be calculated based on your gear reduction and encoder resolution
+        public static final double kDistancePerPulse =
+                360.0 / (2048.0 * 100.0); // Example: (360 deg) / (2048 pulses * 100:1 gearing)
+
+        public static final double kArmLength = 0.6096; // meters
 
         // Control Gains
         public static final double kP = 0.5;
@@ -64,7 +67,7 @@ public final class Constants {
         public static final double kArmGearing = 100.0; // 100:1 gearing
         public static final double kArmMass = 8.0; // kilograms
         // Moment of inertia for a single rod rotating around its end: 1/3 * m * L^2
-        public static final double kArmMomentOfInertia = (1.0/3.0) * kArmMass * kArmLength * kArmLength;
+        public static final double kArmMomentOfInertia = (1.0 / 3.0) * kArmMass * kArmLength * kArmLength;
         public static final double kMinAngleRads = Units.degreesToRadians(0);
         public static final double kMaxAngleRads = Units.degreesToRadians(120);
     }

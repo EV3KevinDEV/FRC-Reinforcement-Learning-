@@ -267,7 +267,11 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
             DogLog.log("Drive/SimulationPose", mapleSimSwerveDrivetrain.mapleSimDrive.getSimulatedDriveTrainPose());
     }
 
-    private MapleSimSwerveDrivetrain mapleSimSwerveDrivetrain = null;
+    private MapleSimSwerveDrivetrain mapleSimSwerveDrivetrain;
+
+    public MapleSimSwerveDrivetrain getMapleSimSwerveDrivetrain() {
+        return this.mapleSimSwerveDrivetrain;
+    }
 
     private void startSimThread() {
         mapleSimSwerveDrivetrain = new MapleSimSwerveDrivetrain(
