@@ -41,6 +41,8 @@ public class Robot extends LoggedRobot {
   
   // NetworkTable for RL state publishing
   private final NetworkTable m_rlStateTable;
+  // NetworkTable for RL control commands
+  private final NetworkTable m_rlControlTable;
 
   /**
    * This function is run when the robot is first started up and should be used
@@ -55,6 +57,8 @@ public class Robot extends LoggedRobot {
     
     // Initialize NetworkTable for RL state
     m_rlStateTable = NetworkTableInstance.getDefault().getTable("RL_State");
+    // Initialize NetworkTable for RL control commands
+    m_rlControlTable = NetworkTableInstance.getDefault().getTable("RL_Control");
 
     // Instantiate our RobotContainer. This will perform all our button bindings,
     // and put our
@@ -92,11 +96,75 @@ public class Robot extends LoggedRobot {
     Logger.recordOutput("FieldSimulation/Coral",
         SimulatedArena.getInstance().getGamePiecesArrayByType("Coral"));
     
+    // Check for RL control commands
+    checkRLControlCommands();
+    
     // Publish basic robot state for RL agent
     publishBasicRobotState();
     
     // Enhanced game piece and scoring tracking
     trackGamePiecesAndScoring();
+  }
+
+  /**
+   * Resets the RL environment by clearing and respawning game pieces.
+   * Pieces are placed uniformly, avoiding the reef areas.
+   */
+  public void resetRLEnvironment() {
+    // 1. Clear all existing game pieces
+    SimulatedArena.getInstance().resetFieldForAuto();
+    RobotContainer.drivetrain.resetPose(new Pose2d(3, 3, new Rotation2d()));
+
+    // 2. Define field dimensions and exclusion zones
+    double fieldWidth = 16.5;
+    double fieldHeight = 8.2;
+    var reefCenterRed = new edu.wpi.first.math.geometry.Translation2d(13.0, 4.0);
+    var reefCenterBlue = new edu.wpi.first.math.geometry.Translation2d(4.5, 4.0);
+    double reefExclusionRadius = 2.5; // Don't spawn coral within this radius of a reef center
+    int numCoralsToSpawn = 15;
+
+    // 3. Spawn new corals in valid locations
+    for (int i = 0; i < numCoralsToSpawn; i++) {
+        double x, y;
+        boolean positionIsValid;
+        
+        do {
+            // Generate a random position on the field
+            x = Math.random() * fieldWidth;
+            y = Math.random() * fieldHeight;
+            
+            var spawnPosition = new edu.wpi.first.math.geometry.Translation2d(x, y);
+            
+            // Check if the position is outside the exclusion zones of both reefs
+            double distToRedReef = spawnPosition.getDistance(reefCenterRed);
+            double distToBlueReef = spawnPosition.getDistance(reefCenterBlue);
+            positionIsValid = distToRedReef > reefExclusionRadius && distToBlueReef > reefExclusionRadius;
+
+        } while (!positionIsValid); // Keep trying until a valid position is found
+
+        // Spawn the coral at the validated position with a random orientation
+        double angle = Math.random() * 360;
+        SimulatedArena.getInstance().addGamePiece(new ReefscapeCoralOnField(
+            new Pose2d(x, y, Rotation2d.fromDegrees(angle))
+        ));
+    }
+    Logger.recordOutput("RL_System/EnvironmentReset", true);
+  }
+
+  /**
+   * Check for RL control commands from NetworkTables and execute them
+   */
+  private void checkRLControlCommands() {
+    // Check if agent requests environment reset
+    boolean shouldReset = m_rlControlTable.getEntry("reset_environment").getBoolean(false);
+    if (shouldReset) {
+      resetRLEnvironment();
+      // Clear the reset flag after executing
+      m_rlControlTable.getEntry("reset_environment").setBoolean(false);
+      // Acknowledge the reset was completed
+      m_rlControlTable.getEntry("reset_completed").setBoolean(true);
+      Logger.recordOutput("RL_System/ResetTriggered", true);
+    }
   }
 
   /**
@@ -135,22 +203,40 @@ public class Robot extends LoggedRobot {
     
     // Track Coral game pieces
     var coralPieces = SimulatedArena.getInstance().getGamePiecesArrayByType("Coral");
-    Logger.recordOutput("RL_State/coral_count", coralPieces.length);
-    m_rlStateTable.getEntry("coral_count").setDouble(coralPieces.length);
     
-    // Find closest coral piece
+    // Define reef locations and exclusion zone
+    var reefCenterRed = new edu.wpi.first.math.geometry.Translation2d(13.0, 4.0);
+    var reefCenterBlue = new edu.wpi.first.math.geometry.Translation2d(3.0, 4.0);
+    double reefExclusionRadius = 2.5; // Corals within this radius of a reef center will be ignored
+    
+    // Find closest coral piece, filtering out those too close to the reef
     double closestCoralDistance = Double.MAX_VALUE;
     double closestCoralX = 0.0, closestCoralY = 0.0;
+    int availableCoralCount = 0;
+
     for (var coral : coralPieces) {
-      // Convert Pose3d to Translation2d for distance calculation
       var coralTranslation = new edu.wpi.first.math.geometry.Translation2d(coral.getX(), coral.getY());
-      double distance = robotPose.getTranslation().getDistance(coralTranslation);
-      if (distance < closestCoralDistance) {
-        closestCoralDistance = distance;
-        closestCoralX = coral.getX();
-        closestCoralY = coral.getY();
+      
+      // Check distance to both reefs
+      double distToRedReef = coralTranslation.getDistance(reefCenterRed);
+      double distToBlueReef = coralTranslation.getDistance(reefCenterBlue);
+
+      // If the coral is outside the exclusion zone of BOTH reefs, consider it
+      if (distToRedReef > reefExclusionRadius && distToBlueReef > reefExclusionRadius) {
+        availableCoralCount++;
+        double distanceToRobot = robotPose.getTranslation().getDistance(coralTranslation);
+        if (distanceToRobot < closestCoralDistance) {
+          closestCoralDistance = distanceToRobot;
+          closestCoralX = coral.getX();
+          closestCoralY = coral.getY();
+        }
       }
     }
+    
+    // Update RL State with filtered coral data
+    Logger.recordOutput("RL_State/coral_count", availableCoralCount);
+    m_rlStateTable.getEntry("coral_count").setDouble(availableCoralCount);
+
     Logger.recordOutput("RL_State/closest_coral_distance", closestCoralDistance);
     Logger.recordOutput("RL_State/closest_coral_x", closestCoralX);
     Logger.recordOutput("RL_State/closest_coral_y", closestCoralY);
@@ -385,9 +471,6 @@ public class Robot extends LoggedRobot {
     m_rlStateTable.getEntry("pose_rotation").setDouble(robotPose.getRotation().getRadians());
     
     // Get drivetrain state for velocity information
-    var drivetrainState = m_robotContainer.drivetrain.getState();
-    
-    // Publish robot velocities - using module speeds for now
 
     var chassisSpeed = RobotContainer.drivetrain.getMapleSimSwerveDrivetrain().getMapleSimDrive().getDriveTrainSimulatedChassisSpeedsFieldRelative();
 

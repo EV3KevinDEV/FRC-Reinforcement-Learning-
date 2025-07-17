@@ -54,7 +54,7 @@ class HeuristicAgent(BasicFRCAgent):
         }
         
         # === CORE GAME PARAMETERS ===
-        self.reef_center = np.array([8.0, 4.0])  # Updated to correct reef center
+        self.reef_center = np.array([4.5, 4.0])  # Updated to correct reef center
         self.coral_only = True  # Focus exclusively on coral (higher value)
         
         # === REEF WALL PARAMETERS ===
@@ -64,11 +64,11 @@ class HeuristicAgent(BasicFRCAgent):
         self.wall_detection_distance = 4.0  # How close to wall to trigger ejection (increased)
         
         # === CONTROL THRESHOLDS ===
-        self.alignment_tolerance = 0.15  # Radians (~8.6 degrees) for heading alignment
+        self.alignment_tolerance = 0.1 # Radians (~8.6 degrees) for heading alignment
         self.intake_distance = 0.8       # Distance to start intake approach
-        self.scoring_distance = 5.0      # Distance to start scoring approach (increased)
-        self.eject_distance = 5.0        # Distance to start ejecting (increased to allow reef approach)
-        self.speed_scale = 1.5          # Base movement speed multiplier (reduced from 3.5)
+        self.scoring_distance = 1.5     # Distance to start scoring approach (increased)
+        self.eject_distance = 1.5  # Distance to start ejecting (increased to allow reef approach)
+        self.speed_scale = 3.5        # Base movement speed multiplier (reduced from 3.5)
         self.rotation_scale = 1.5       # Base rotation speed multiplier (reduced from 2.8)
         
         # === REWARD WEIGHTS (Advanced Shaping) ===
@@ -80,7 +80,7 @@ class HeuristicAgent(BasicFRCAgent):
         
         # Advanced shaping
         self.k5_heading = 1.5       # Heading alignment reward
-        self.k6_mechanism = 3.0     # Elevator/arm positioning reward
+        self.k6_mechanism = 2.1     # Elevator/arm positioning reward
         self.p5_drop = 8.0          # Drop piece penalty
         self.p3_time = 0.02         # Base time penalty
         self.alpha_time = 0.5       # Time pressure multiplier
@@ -89,8 +89,8 @@ class HeuristicAgent(BasicFRCAgent):
         self.p1_collision = 5.0     # Collision penalty
         self.p2_turn = 0.3          # Turn rate penalty
         self.move_reward = 0.08     # Movement reward scale
-        self.pause_penalty = 0.05   # Stationary penalty
-        
+        self.pause_penalty = 0.1    # Stationary penalty
+
         # === MECHANISM PARAMETERS ===
         self.desired_elevator_height = 2  # Optimal height for reef scoring
         self.elevator_tolerance = 0.5    # Tolerance for "good" positioning
@@ -147,15 +147,85 @@ class HeuristicAgent(BasicFRCAgent):
         self.command_hold_time = 5      # Hold same command for this many timesteps
         self.command_hold_counter = 0   # Counter for holding commands
         
-        # === NETWORKTABLES CONNECTION ===
-        self.inst = ntcore.NetworkTableInstance.getDefault()
-        self.control_table = None
-        self.state_table = None
-        self.connected = False
+        # Note: NetworkTables connection is inherited from BasicFRCAgent
+        # self.inst, self.control_table, self.state_table, self.connected are from parent class
         
+        self.reset() # Initialize state variables
+
         logger.info("Advanced Coral-Focused Agent initialized")
         logger.info(f"Focus: Coral only={self.coral_only}, Reef center={self.reef_center}")
         logger.info(f"Thresholds: align={self.alignment_tolerance:.2f}, intake_dist={self.intake_distance:.2f}")
+
+    def reset(self):
+        """
+        Resets the agent's state for the beginning of a new episode.
+        Also triggers robot environment reset via NetworkTables.
+        """
+        logger.info("Starting agent reset for new episode...")
+        
+        # === TRIGGER ROBOT ENVIRONMENT RESET ===
+        if hasattr(self, 'control_table') and self.control_table is not None:
+            try:
+                logger.info("Requesting robot environment reset via NetworkTables...")
+                # Request robot to reset the environment
+                self.control_table.putBoolean("reset_environment", True)
+                
+                # Wait for reset completion (with timeout)
+                start_time = time.time()
+                reset_acknowledged = False
+                while time.time() - start_time < 3.0:  # Increased timeout to 3 seconds
+                    if self.control_table.getBoolean("reset_completed", False):
+                        # Clear the completion flag
+                        self.control_table.putBoolean("reset_completed", False)
+                        logger.info("Robot environment reset completed successfully")
+                        reset_acknowledged = True
+                        break
+                    time.sleep(0.1)
+                
+                if not reset_acknowledged:
+                    logger.warning("Robot environment reset timeout - continuing anyway")
+                    # Clear the reset flag even if timeout occurred
+                    self.control_table.putBoolean("reset_environment", False)
+                
+            except Exception as e:
+                logger.error(f"Failed to trigger robot environment reset: {e}")
+        else:
+            logger.warning("NetworkTables not connected - skipping robot environment reset")
+        
+        # === EPISODE TRACKING ===
+        self.episode_start_time = time.time()  # Use time.time() instead of 0.0
+        logger.debug(f"Episode start time set to: {self.episode_start_time}")
+        
+        # === COLLISION DETECTION AND MAPPING ===
+        self.position_history = []
+        self.velocity_history = []
+        self.obstacle_map = np.zeros((self.map_height, self.map_width))
+        self.obstacle_confidence = np.zeros((self.map_height, self.map_width))
+        
+        # Pathfinding parameters
+        self.path_cache = {}
+        self.current_path = []
+        self.path_target = None
+        self.waypoint_attempts = 0
+        self.last_waypoint = None
+        self.emergency_escape_mode = False
+        self.emergency_escape_counter = 0
+        
+        # Directional stuck detection
+        self.direction_attempts = {}
+        self.direction_history = []
+        self.last_stuck_direction = None
+        
+        # Desperation mode
+        self.desperation_counter = 0
+        self.desperation_mode = False
+        self.last_position_for_desperation = None
+        
+        # === VELOCITY SMOOTHING ===
+        self.last_velocity_command = [0.0, 0.0, 0.0]
+        self.command_hold_counter = 0
+        
+        logger.info("HeuristicAgent state has been reset for a new episode.")
 
     def _smooth_velocity_commands(self, vx: float, vy: float, ang_vel: float) -> Tuple[float, float, float]:
         """
@@ -1423,6 +1493,7 @@ class HeuristicAgent(BasicFRCAgent):
             distance_to_left_wall = self.state_table.getNumber("distance_to_left_wall", 0.0)
             distance_to_right_wall = self.state_table.getNumber("distance_to_right_wall", 0.0)
             distance_to_bottom_wall = self.state_table.getNumber("distance_to_bottom_wall", 0.0)
+           
             distance_to_top_wall = self.state_table.getNumber("distance_to_top_wall", 0.0)
             additional_state = [
                 is_stuck,
@@ -1559,7 +1630,7 @@ class HeuristicAgent(BasicFRCAgent):
         
         return action
 
-    def run_episode(self, max_steps: int = 1000, timestep: float = 0.02):
+    def run_episode(self, max_steps: int = 2000, timestep: float = 0.02):
         """
         Run a single episode with advanced reward calculation.
         """
@@ -1739,4 +1810,4 @@ class HeuristicAgent(BasicFRCAgent):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     agent = HeuristicAgent()
-    agent.run_training_session(num_episodes=20)
+    agent.run_training_session(num_episodes=100)
