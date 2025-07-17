@@ -5,8 +5,11 @@
 package frc.robot;
 
 import edu.wpi.first.wpilibj.DriverStation.Alliance;
+import edu.wpi.first.wpilibj.TimedRobot;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.CommandScheduler;
+import frc.robot.subsystems.ArmElevator;
+import frc.robot.subsystems.Intake;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.networktables.NetworkTable;
@@ -15,12 +18,14 @@ import edu.wpi.first.networktables.NetworkTableInstance;
 import java.util.Optional;
 
 import org.ironmaple.simulation.SimulatedArena;
-import org.ironmaple.simulation.seasonspecific.reefscape2025.ReefscapeAlgaeOnField;
 import org.ironmaple.simulation.seasonspecific.reefscape2025.ReefscapeCoralOnField;
 import org.ironmaple.simulation.seasonspecific.reefscape2025.ReefscapeReefSimulation;
+import org.littletonrobotics.junction.LogFileUtil;
 import org.littletonrobotics.junction.LoggedRobot;
 import org.littletonrobotics.junction.Logger;
 import org.littletonrobotics.junction.networktables.NT4Publisher;
+import org.littletonrobotics.junction.wpilog.WPILOGReader;
+import org.littletonrobotics.junction.wpilog.WPILOGWriter;
 
 /**
  * The methods in this class are called automatically corresponding to each
@@ -34,14 +39,8 @@ public class Robot extends LoggedRobot {
 
   private final RobotContainer m_robotContainer;
   
-  // NetworkTables for RL communication
+  // NetworkTable for RL state publishing
   private final NetworkTable m_rlStateTable;
-  private final NetworkTable m_rlControlTable;
-  
-  // Environment reset tracking
-  private boolean m_resetRequested = false;
-  private boolean m_resetInProgress = false;
-  private double m_resetStartTime = 0.0;
 
   /**
    * This function is run when the robot is first started up and should be used
@@ -54,9 +53,8 @@ public class Robot extends LoggedRobot {
     // Start logging before creating RobotContainer
     Logger.start();
     
-    // Initialize NetworkTables for RL communication
+    // Initialize NetworkTable for RL state
     m_rlStateTable = NetworkTableInstance.getDefault().getTable("RL_State");
-    m_rlControlTable = NetworkTableInstance.getDefault().getTable("RL_Control");
 
     // Instantiate our RobotContainer. This will perform all our button bindings,
     // and put our
@@ -89,22 +87,16 @@ public class Robot extends LoggedRobot {
     CommandScheduler.getInstance().run();
     SimulatedArena.getInstance().simulationPeriodic();
 
-    // Check for environment reset requests from RL agent
-    checkForEnvironmentReset();
-
     Logger.recordOutput("FieldSimulation/Algae",
         SimulatedArena.getInstance().getGamePiecesArrayByType("Algae"));
     Logger.recordOutput("FieldSimulation/Coral",
         SimulatedArena.getInstance().getGamePiecesArrayByType("Coral"));
     
-    // Only publish state if not in middle of reset
-    if (!m_resetInProgress) {
-      // Publish basic robot state for RL agent
-      publishBasicRobotState();
-      
-      // Enhanced game piece and scoring tracking
-      trackGamePiecesAndScoring();
-    }
+    // Publish basic robot state for RL agent
+    publishBasicRobotState();
+    
+    // Enhanced game piece and scoring tracking
+    trackGamePiecesAndScoring();
   }
 
   /**
@@ -396,193 +388,24 @@ public class Robot extends LoggedRobot {
     var drivetrainState = m_robotContainer.drivetrain.getState();
     
     // Publish robot velocities - using module speeds for now
-    // TODO: Get actual chassis speeds if available
-    var moduleStates = drivetrainState.ModuleStates;
-    double avgVelocity = 0.0;
-    for (var state : moduleStates) {
-      avgVelocity += state.speedMetersPerSecond;
-    }
-    avgVelocity /= moduleStates.length;
-    
-    Logger.recordOutput("RL_State/velocity_x", avgVelocity); // Simplified velocity
-    Logger.recordOutput("RL_State/velocity_y", 0.0); // TODO: Calculate Y velocity from module states
-    Logger.recordOutput("RL_State/angular_velocity", 0.0); // TODO: Calculate angular velocity
-    
+
+    var chassisSpeed = RobotContainer.drivetrain.getMapleSimSwerveDrivetrain().getMapleSimDrive().getDriveTrainSimulatedChassisSpeedsFieldRelative();
+
     // Also publish to NetworkTable
-    m_rlStateTable.getEntry("velocity_x").setDouble(avgVelocity);
-    m_rlStateTable.getEntry("velocity_y").setDouble(0.0);
-    m_rlStateTable.getEntry("angular_velocity").setDouble(0.0);
+    m_rlStateTable.getEntry("velocity_x").setDouble(chassisSpeed.vxMetersPerSecond);
+    m_rlStateTable.getEntry("velocity_y").setDouble(chassisSpeed.vyMetersPerSecond);
+    m_rlStateTable.getEntry("angular_velocity").setDouble(chassisSpeed.omegaRadiansPerSecond);
+
+
     
-    // Publish mechanism states (these would need to be implemented based on your robot)
-    // For now, using placeholder values - you'll need to connect these to actual subsystems
-    Logger.recordOutput("RL_State/elevator_height", 0.0); // TODO: Connect to actual elevator
-    Logger.recordOutput("RL_State/arm_angle", 0.0); // TODO: Connect to actual arm
-    Logger.recordOutput("RL_State/at_setpoint", false); // TODO: Connect to actual setpoint status
-    Logger.recordOutput("RL_State/has_game_piece", false); // TODO: Connect to actual game piece detection
-    Logger.recordOutput("RL_State/timestamp", edu.wpi.first.wpilibj.Timer.getFPGATimestamp());
-    
+    ArmElevator armElevator = RobotContainer.m_armElevator;
+    Intake intake = RobotContainer.m_intake;
+
     // Also publish to NetworkTable
-    m_rlStateTable.getEntry("elevator_height").setDouble(0.0);
-    m_rlStateTable.getEntry("arm_angle").setDouble(0.0);
-    m_rlStateTable.getEntry("at_setpoint").setBoolean(false);
-    m_rlStateTable.getEntry("has_game_piece").setBoolean(false);
+    m_rlStateTable.getEntry("elevator_height").setDouble(armElevator.getElevatorHeight());
+    m_rlStateTable.getEntry("arm_angle").setDouble(armElevator.getArmAngle());
+    m_rlStateTable.getEntry("at_setpoint").setBoolean(armElevator.atSetpoint());
+    m_rlStateTable.getEntry("has_game_piece").setBoolean(intake.hasGamePiece());
     m_rlStateTable.getEntry("timestamp").setDouble(edu.wpi.first.wpilibj.Timer.getFPGATimestamp());
-  }
-  
-  /**
-   * Check for environment reset requests from RL agent and handle reset process
-   */
-  private void checkForEnvironmentReset() {
-    // Check if reset is requested by RL agent
-    boolean resetRequested = m_rlControlTable.getEntry("reset_environment").getBoolean(false);
-    
-    if (resetRequested && !m_resetInProgress) {
-      // Start reset process
-      m_resetInProgress = true;
-      m_resetStartTime = edu.wpi.first.wpilibj.Timer.getFPGATimestamp();
-      
-      // Immediately acknowledge reset request
-      m_rlStateTable.getEntry("reset_in_progress").setBoolean(true);
-      Logger.recordOutput("RL_State/reset_in_progress", true);
-      
-      // Perform the actual reset
-      performEnvironmentReset();
-      
-      // Clear the reset request
-      m_rlControlTable.getEntry("reset_environment").setBoolean(false);
-    }
-    
-    // Check if reset process should be completed
-    if (m_resetInProgress) {
-      double resetDuration = edu.wpi.first.wpilibj.Timer.getFPGATimestamp() - m_resetStartTime;
-      if (resetDuration > 0.5) { // Allow 0.5 seconds for reset to stabilize
-        m_resetInProgress = false;
-        m_rlStateTable.getEntry("reset_in_progress").setBoolean(false);
-        m_rlStateTable.getEntry("reset_completed").setBoolean(true);
-        Logger.recordOutput("RL_State/reset_in_progress", false);
-        Logger.recordOutput("RL_State/reset_completed", true);
-      }
-    }
-  }
-  
-  /**
-   * Perform the actual environment reset
-   */
-  private void performEnvironmentReset() {
-    Logger.recordOutput("RL_System/Environment_Reset_Started", true);
-    
-    // 1. Reset robot position to a standard starting location
-    resetRobotPosition();
-    
-    // 2. Clear and respawn game pieces in standard positions
-    resetGamePieces();
-    
-    // 3. Reset scoring system
-    resetScoringSystem();
-    
-    // 4. Reset any mechanism states
-    resetMechanisms();
-    
-    Logger.recordOutput("RL_System/Environment_Reset_Completed", true);
-  }
-  
-  /**
-   * Reset robot to standard starting position
-   */
-  private void resetRobotPosition() {
-    // Reset robot to center of field facing forward
-    var startPose = new Pose2d(8.0, 4.0, new Rotation2d(0.0));
-    
-    // Reset the simulated drivetrain pose using the correct method
-    try {
-      // Try to use the pose reset method if available
-      var simulatedDrive = m_robotContainer.drivetrain.getMapleSimSwerveDrivetrain();
-      // Note: The exact method name may vary - you may need to check the MapleSimSwerveDrive API
-      simulatedDrive.mapleSimDrive.setSimulationWorldPose(startPose);
-      
-      // For now, we'll log the intended reset position
-      Logger.recordOutput("RL_Reset/Intended_Robot_Position", startPose);
-    } catch (Exception e) {
-      Logger.recordOutput("RL_Reset/Position_Reset_Error", e.getMessage());
-    }
-    
-    Logger.recordOutput("RL_Reset/Robot_Position_Reset", startPose);
-  }
-  
-  /**
-   * Reset game pieces to standard starting configuration
-   */
-  private void resetGamePieces() {
-    // Clear all existing game pieces
-    SimulatedArena.getInstance().clearGamePieces();
-    
-    // Spawn initial game pieces in standard locations
-    // Add some algae pieces around the field
-    for (int i = 0; i < 8; i++) {
-      // TODO: Implement actual game piece spawning when ReefscapeCoralOnField API is available
-      double x = 2.0 + (i % 4) * 3.0; // Spread across field width
-      double y = 1.5 + (i / 4) * 5.0; // Two rows
-      double angle = Math.random() * 360; // Random orientation
-      
-      // Add coral piece (assuming coral constructor exists)
-      // Note: You'll need to implement the actual coral game piece class
-      SimulatedArena.getInstance().addGamePiece(new ReefscapeCoralOnField(
-        new Pose2d(x, y, Rotation2d.fromDegrees(angle))
-      ));
-      
-      Logger.recordOutput("RL_Reset/Game_Piece_" + i + "_Spawned", true);
-    }
-    
-    // Add some coral pieces
-    for (int i = 0; i < 6; i++) {
-      double x = 1.5 + i * 2.5; // Spread across field
-      double y = 3.5 + (i % 2) * 1.0; // Alternate rows
-      double angle = Math.random() * 360;
-      
-      SimulatedArena.getInstance().addGamePiece(new ReefscapeCoralOnField(
-        new Pose2d(x, y, Rotation2d.fromDegrees(angle))
-      ));
-    }
-    
-    Logger.recordOutput("RL_Reset/Game_Pieces_Reset", true);
-  }
-  
-  /**
-   * Reset scoring system and reef state
-   */
-  private void resetScoringSystem() {
-    // Reset reef simulation if available
-    Optional<ReefscapeReefSimulation> reefSimulation = ReefscapeReefSimulation.getInstance();
-    if (reefSimulation.isPresent()) {
-
-      
-      // Clear all pieces from reef branches
-      // Note: This assumes there's a method to reset the reef
-      // You may need to implement this in the ReefscapeReefSimulation class
-      // SimulatedArena.getInstance().clearGamePieces();
-      
-    }
-    
-    Logger.recordOutput("RL_Reset/Scoring_System_Reset", true);
-  }
-  
-  /**
-   * Reset robot mechanisms to default states
-   */
-  private void resetMechanisms() {
-    // Reset elevator, arm, intake, etc. to default positions
-    // This would connect to your actual subsystems
-    
-    // Example: Reset elevator to bottom position
-    RobotContainer.m_armElevator.setArmGoal(0.0); // Reset arm to 0 degrees
-    RobotContainer.m_armElevator.setElevatorGoal(0.0); // Reset elevator to bottom position
-
-    // Example: Reset arm to starting angle
-    // m_robotContainer.arm.setAngle(0.0);
-    
-    // Example: Stop intake
-    // m_robotContainer.intake.stop();
-    
-    Logger.recordOutput("RL_Reset/Mechanisms_Reset", true);
   }
 }

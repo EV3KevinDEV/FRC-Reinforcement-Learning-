@@ -36,7 +36,8 @@ public class NetworkTableControlCommand extends Command {
     private final DoubleSubscriber m_intakeCommandSub;
     
     // Swerve request for controlling drivetrain
-    private final SwerveRequest.FieldCentric m_driveRequest = new SwerveRequest.FieldCentric();
+    // private final SwerveRequest.RobotCentric m_driveRequest = new SwerveRequest.RobotCentric();
+    private final SwerveRequest.RobotCentric m_driveRequest = new SwerveRequest.RobotCentric();
     
     // Control values (defaults to safe values)
     private double m_velocityX = 0.0;      // Forward/backward velocity (m/s)
@@ -206,9 +207,10 @@ public class NetworkTableControlCommand extends Command {
         stateTable.getEntry("elevator_height").setDouble(m_armElevator.getElevatorHeight());
         stateTable.getEntry("arm_angle").setDouble(m_armElevator.getArmAngle());
         stateTable.getEntry("at_setpoint").setBoolean(m_armElevator.atSetpoint());
-        
-        // Intake state
+        // Publish whether robot currently has a game piece
         stateTable.getEntry("has_game_piece").setBoolean(m_intake.hasGamePiece());
+        
+
         
         // Add timestamp for synchronization
         stateTable.getEntry("timestamp").setDouble(edu.wpi.first.wpilibj.Timer.getFPGATimestamp());

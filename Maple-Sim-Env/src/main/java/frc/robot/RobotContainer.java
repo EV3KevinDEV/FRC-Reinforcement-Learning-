@@ -45,9 +45,8 @@ public class RobotContainer {
     private final CommandXboxController joystick = new CommandXboxController(0);
     
 
-    public final CommandSwerveDrivetrain drivetrain = TunerConstants.createDrivetrain();
-    public final Intake m_intake = new Intake(drivetrain.getMapleSimSwerveDrivetrain().getMapleSimDrive());
-
+    public final static CommandSwerveDrivetrain drivetrain = TunerConstants.createDrivetrain();
+    public final static Intake m_intake = new Intake(drivetrain.getMapleSimSwerveDrivetrain().getMapleSimDrive());
     public static final ArmElevator m_armElevator = new ArmElevator();
 
     /* Path follower */

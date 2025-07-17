@@ -64,7 +64,7 @@ class BasicFRCAgent:
         self.state_table = None
         
         # State and action spaces
-        self.state_size = 27  # Enhanced state with orientation and intake direction info
+        self.state_size = 25  # Enhanced state with game piece and scoring info
         self.action_size = 6  # vel_x, vel_y, ang_vel, elev_height, arm_angle, intake_cmd
         
         # Action limits (matching robot safety limits)
@@ -81,23 +81,13 @@ class BasicFRCAgent:
         self.current_state = np.zeros(self.state_size)
         self.current_action = np.zeros(self.action_size)
         
-        # === IMPROVED MOVEMENT AND EXPLORATION TRACKING ===
+        # === IMPROVED STUCK DETECTION AND PUNISHMENT TRACKING ===
         self.position_history = []  # Track recent positions for stuck detection
-        self.stuck_threshold = 0.002  # Slightly more lenient movement threshold
-        self.stuck_check_window = 15  # Shorter window for faster response
+        self.stuck_threshold = 0.001  # Very lenient - robot moves at 0.0005m avg
+        self.stuck_check_window = 20  # Longer window for better averaging
         self.consecutive_stuck_steps = 0  # Count of consecutive stuck steps
-        self.max_stuck_penalty = -3.0  # Reduced max penalty to encourage learning
-        self.stuck_reset_threshold = 0.01  # Movement needed to reset stuck counter
-        
-        # Movement encouragement tracking
-        self.total_distance_traveled = 0.0  # Reward exploration
-        self.area_coverage_bonus = 0.0  # Bonus for visiting new areas
-        self.visited_positions = set()  # Track visited grid positions for coverage
-        self.exploration_grid_size = 1.0  # Grid size for area coverage tracking
-        
-        # Orientation and intake tracking
-        self.intake_facing_history = []  # Track when robot faces game pieces correctly
-        self.intake_success_memory = deque(maxlen=100)  # Remember successful intake orientations
+        self.max_stuck_penalty = -5.0  # Reduced max penalty
+        self.stuck_reset_threshold = 0.005  # Very low movement needed to reset
         
         # Wall collision memory
         self.recent_wall_collisions = []  # Track recent wall collisions
@@ -135,16 +125,6 @@ class BasicFRCAgent:
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-3)
         self.update_target_steps = 1000
         self.learn_step_counter = 0
-        
-        # Episode management
-        self.episode_count = 0
-        self.episode_step_count = 0
-        self.max_steps_per_episode = 2000
-        self.reset_timeout = 5.0  # seconds to wait for reset completion
-        
-        # Reset state tracking
-        self.reset_in_progress = False
-        self.reset_requested_time = None
         
     def connect(self) -> bool:
         """
@@ -247,23 +227,17 @@ class BasicFRCAgent:
                 self.state_table.getNumber("timestamp", 0.0)
             ]
             
-            # Enhanced game state information (16 additional values with orientation)
-            closest_algae_x = self.state_table.getNumber("closest_algae_x", 0.0)
-            closest_algae_y = self.state_table.getNumber("closest_algae_y", 0.0)
-            closest_coral_x = self.state_table.getNumber("closest_coral_x", 0.0)
-            closest_coral_y = self.state_table.getNumber("closest_coral_y", 0.0)
-            pose_rotation = self.state_table.getNumber("pose_rotation", 0.0)
-            
+            # Enhanced game state information (14 additional values)
             game_state = [
                 # Game piece counts and distances
                 self.state_table.getNumber("algae_count", 0.0),
                 self.state_table.getNumber("coral_count", 0.0),
                 self.state_table.getNumber("closest_algae_distance", 999.0),
-                closest_algae_x,
-                closest_algae_y,
+                self.state_table.getNumber("closest_algae_x", 0.0),
+                self.state_table.getNumber("closest_algae_y", 0.0),
                 self.state_table.getNumber("closest_coral_distance", 999.0),
-                closest_coral_x,
-                closest_coral_y,
+                self.state_table.getNumber("closest_coral_x", 0.0),
+                self.state_table.getNumber("closest_coral_y", 0.0),
                 
                 # Scoring information
                 self.state_table.getNumber("red_score", 0.0),
@@ -276,26 +250,8 @@ class BasicFRCAgent:
                 self.state_table.getNumber("distance_to_nearest_reef", 999.0)
             ]
             
-            # === NEW: ORIENTATION AND INTAKE DIRECTION AWARENESS ===
-            # Calculate if robot is facing toward closest game piece (intake orientation)
-            closest_piece_x, closest_piece_y = closest_algae_x, closest_algae_y
-            closest_algae_dist = self.state_table.getNumber("closest_algae_distance", 999.0)
-            closest_coral_dist = self.state_table.getNumber("closest_coral_distance", 999.0)
-            
-            if closest_coral_dist < closest_algae_dist:
-                closest_piece_x, closest_piece_y = closest_coral_x, closest_coral_y
-            
-            # Calculate intake alignment - how well is robot oriented for intake?
-            intake_alignment = self._calculate_intake_alignment(pose_x, pose_y, pose_rotation, 
-                                                              closest_piece_x, closest_piece_y)
-            
-            orientation_state = [
-                intake_alignment,  # How well aligned for intake (-1 to 1)
-                np.sin(pose_rotation),  # Robot heading components for neural network
-            ]
-            
-            # Combine basic and enhanced state (11 + 14 + 2 = 27)
-            state = np.array(basic_state + game_state + orientation_state)
+            # Combine basic and enhanced state
+            state = np.array(basic_state + game_state)
             self.current_state = state
             return state
             
@@ -354,53 +310,31 @@ class BasicFRCAgent:
     
     def random_policy(self) -> List[float]:
         """
-        Generate a random action for testing with enhanced movement encouragement.
+        Generate a random action for testing.
         
         Returns:
-            Random action within safe limits, biased toward exploration and movement
+            Random action within safe limits
         """
         action = []
-        
-        # Enhanced movement generation - encourage more exploration
-        for i, limit in enumerate([
+        for limit in [
             self.action_limits['velocity_x'],
             self.action_limits['velocity_y'],
             self.action_limits['angular_velocity'],
             self.action_limits['elevator_height'],
             self.action_limits['arm_angle'],
             self.action_limits['intake_command']
-        ]):
-            if i < 2:  # Velocity actions (x, y) - encourage more movement
-                if np.random.random() < 0.4:  # 40% chance of significant movement
-                    action.append(np.random.uniform(limit[0] * 0.8, limit[1] * 0.8))
-                elif np.random.random() < 0.7:  # 30% chance of moderate movement  
-                    action.append(np.random.uniform(limit[0] * 0.5, limit[1] * 0.5))
-                else:  # 30% chance of small movement
-                    action.append(np.random.uniform(limit[0] * 0.2, limit[1] * 0.2))
-            elif i == 2:  # Angular velocity - encourage rotation for better game piece alignment
-                if np.random.random() < 0.5:  # 50% chance of rotation
-                    action.append(np.random.uniform(limit[0] * 0.6, limit[1] * 0.6))
-                else:
-                    action.append(0.0)  # No rotation
-            else:  # Other actions (elevator, arm, intake)
-                if np.random.random() < 0.7:  # 70% chance of small movement for safety
-                    action.append(np.random.uniform(limit[0] * 0.3, limit[1] * 0.3))
-                else:  # 30% chance of larger movement
-                    action.append(np.random.uniform(limit[0] * 0.7, limit[1] * 0.7))
+        ]:
+            # Generate random value within limits (with bias toward zero for safety)
+            if np.random.random() < 0.7:  # 70% chance of small movement
+                action.append(np.random.uniform(limit[0] * 0.3, limit[1] * 0.3))
+            else:  # 30% chance of larger movement
+                action.append(np.random.uniform(limit[0], limit[1]))
         
         return action
     
     def select_action(self, state: np.ndarray) -> List[float]:
-        """Select action using epsilon-greedy policy with smart game piece awareness."""
+        """Select action using epsilon-greedy policy."""
         if random.random() < self.epsilon:
-            # During exploration, sometimes use smart actions when near game pieces
-            if len(state) >= 27 and not (state[9] > 0.5):  # Don't have game piece
-                closest_distance = min(state[13], state[16])  # Min of algae and coral distance
-                
-                # 30% chance to use smart action when close to game piece
-                if closest_distance < 3.0 and random.random() < 0.3:
-                    return self.get_smart_action_for_game_piece(state)
-            
             return self.random_policy()
         else:
             state_t = torch.FloatTensor(state).unsqueeze(0)
@@ -519,22 +453,9 @@ class BasicFRCAgent:
             logger.info(f"Total steps: {step_count}, Total reward: {total_reward:.2f}, "
                        f"Average reward: {total_reward/max(step_count, 1):.3f}")
             
-            # Enhanced exploration statistics
-            exploration_stats = self.get_exploration_stats()
-            logger.info(f"Exploration Stats:")
-            logger.info(f"  Total distance traveled: {exploration_stats['total_distance']:.2f}m")
-            logger.info(f"  Areas visited: {exploration_stats['areas_visited']}")
-            logger.info(f"  Average movement per step: {exploration_stats['average_movement']:.4f}m")
-            logger.info(f"  Final stuck steps: {exploration_stats['stuck_steps']}")
-            
             # Final game state summary
             final_game_info = self.get_game_info()
             logger.info(f"Final game state: {final_game_info}")
-            
-            # Intake success patterns
-            if self.intake_success_memory:
-                avg_success_alignment = np.mean([s['alignment'] for s in self.intake_success_memory])
-                logger.info(f"Successful intake patterns - Average alignment: {avg_success_alignment:.2f}")
     
     def test_simple_movement(self):
         """Test simple movement to debug connection issues."""
@@ -610,89 +531,13 @@ class BasicFRCAgent:
         
         reward += stuck_penalty + oscillation_penalty + inefficiency_penalty + unstuck_bonus
         
-        # === ENHANCED MOVEMENT AND EXPLORATION ENCOURAGEMENT ===
-        # Stronger bonus for any movement to encourage exploration
+        # === MOVEMENT ENCOURAGEMENT ===
+        # Bonus for any movement at all to encourage exploration
         position_change = np.linalg.norm(next_state[:2] - state[:2])
         if position_change > 0.001:  # Any detectable movement
-            movement_bonus = min(2.0, position_change * 15.0)  # Increased bonus for movement
+            movement_bonus = min(1.0, position_change * 10.0)  # Scale up small movements
             reward += movement_bonus
-            
-            # Track total distance for exploration reward
-            self.total_distance_traveled += position_change
-            
-            # Area coverage bonus - reward for visiting new areas
-            grid_x = int(next_state[0] / self.exploration_grid_size)
-            grid_y = int(next_state[1] / self.exploration_grid_size)
-            grid_pos = (grid_x, grid_y)
-            
-            if grid_pos not in self.visited_positions:
-                self.visited_positions.add(grid_pos)
-                exploration_bonus = 1.5  # Bonus for visiting new area
-                reward += exploration_bonus
-                logger.debug(f"EXPLORATION BONUS: {exploration_bonus:.2f} for new area ({grid_x}, {grid_y})")
-            
             logger.debug(f"MOVEMENT BONUS: {movement_bonus:.3f} for {position_change:.4f}m movement")
-        
-        # Bonus for maintaining steady movement (anti-stuck)
-        if len(self.position_history) >= 3:
-            recent_movements = []
-            for i in range(len(self.position_history) - 2):
-                pos1 = np.array(self.position_history[i])
-                pos2 = np.array(self.position_history[i + 1])
-                recent_movements.append(np.linalg.norm(pos2 - pos1))
-            
-            avg_movement = np.mean(recent_movements)
-            if avg_movement > 0.01:  # Sustained movement
-                sustained_movement_bonus = min(1.0, avg_movement * 20.0)
-                reward += sustained_movement_bonus
-                logger.debug(f"SUSTAINED MOVEMENT BONUS: {sustained_movement_bonus:.3f}")
-        
-        # === ORIENTATION AND INTAKE AWARENESS REWARDS ===
-        # Extract orientation information from enhanced state
-        intake_alignment = next_state[25] if len(next_state) > 25 else 0.0  # From our enhanced state
-        prev_intake_alignment = state[25] if len(state) > 25 else 0.0
-        
-        # Extract game piece info
-        has_game_piece = next_state[9] > 0.5
-        prev_has_game_piece = state[9] > 0.5
-        closest_algae_dist = next_state[13] if len(next_state) > 13 else 999.0
-        closest_coral_dist = next_state[16] if len(next_state) > 16 else 999.0
-        min_piece_distance = min(closest_algae_dist, closest_coral_dist)
-        
-        # Reward for improving intake alignment when near game pieces
-        if not has_game_piece and min_piece_distance < 2.0:  # Only when close to pieces
-            alignment_improvement = intake_alignment - prev_intake_alignment
-            if alignment_improvement > 0:
-                alignment_bonus = 2.0 * alignment_improvement * (2.0 - min_piece_distance)  # Stronger when closer
-                reward += alignment_bonus
-                logger.debug(f"ALIGNMENT BONUS: {alignment_bonus:.3f} for improving intake alignment")
-            
-            # Extra bonus for good alignment while close
-            if intake_alignment > 0.7 and min_piece_distance < 1.0:
-                good_alignment_bonus = 3.0 * intake_alignment
-                reward += good_alignment_bonus
-                logger.debug(f"GOOD ALIGNMENT BONUS: {good_alignment_bonus:.3f}")
-        
-        # Reward for using intake correctly when well-aligned
-        if not has_game_piece and min_piece_distance < 1.5:
-            intake_command = action[5] if len(action) > 5 else 0.0
-            if intake_alignment > 0.5 and intake_command > 0.3:  # Good alignment + intake command
-                correct_intake_bonus = 2.5 * intake_alignment * intake_command
-                reward += correct_intake_bonus
-                logger.debug(f"CORRECT INTAKE BONUS: {correct_intake_bonus:.3f}")
-            elif intake_alignment < -0.3 and intake_command > 0.3:  # Bad alignment + intake
-                wrong_intake_penalty = -1.0
-                reward += wrong_intake_penalty
-                logger.debug(f"WRONG INTAKE PENALTY: {wrong_intake_penalty:.2f}")
-        
-        # === ANGULAR MOVEMENT ENCOURAGEMENT ===
-        # Reward for rotation when it helps with alignment
-        angular_velocity = action[2] if len(action) > 2 else 0.0
-        if not has_game_piece and min_piece_distance < 3.0 and abs(angular_velocity) > 0.1:
-            if intake_alignment > prev_intake_alignment:  # Rotation improved alignment
-                rotation_bonus = 1.0 * abs(angular_velocity) * (intake_alignment - prev_intake_alignment)
-                reward += rotation_bonus
-                logger.debug(f"ROTATION BONUS: {rotation_bonus:.3f} for improving alignment via rotation")
         
         # === BOUNDARY AWARENESS AND WALL APPROACH PREVENTION ===
         # Penalty for being near walls, larger penalty for being stuck at walls
@@ -769,72 +614,50 @@ class BasicFRCAgent:
         prev_has_game_piece = state[9] > 0.5 if len(state) > 9 else has_game_piece
         prev_distance_to_reef = state[24] if len(state) > 24 else distance_to_nearest_reef
         
-        # === ENHANCED PHASE 1: ORIENTATION-AWARE GAME PIECE ACQUISITION ===
+        # === PHASE 1: PRIORITIZE GAME PIECE ACQUISITION ===
         
         if not has_game_piece:
-            # HIGHEST PRIORITY: Getting closer to game pieces with proper orientation
+            # HIGHEST PRIORITY: Getting closer to game pieces
             min_piece_distance = min(closest_algae_dist, closest_coral_dist)
             prev_min_piece_distance = min(prev_closest_algae_dist, prev_closest_coral_dist)
             
-            # Enhanced reward for approaching game pieces (orientation-aware)
+            # Strong reward for approaching game pieces
             if min_piece_distance < prev_min_piece_distance:
                 distance_improvement = prev_min_piece_distance - min_piece_distance
-                base_approach_reward = 4.0 * distance_improvement  # Increased base reward
-                
-                # Multiply by alignment factor when close - reward good orientation
-                if min_piece_distance < 2.0:
-                    alignment_multiplier = max(0.5, (intake_alignment + 1.0) / 2.0)  # 0.5 to 1.0 multiplier
-                    base_approach_reward *= alignment_multiplier
-                    logger.debug(f"ALIGNED APPROACH: {base_approach_reward:.3f} with alignment {intake_alignment:.2f}")
-                
-                reward += base_approach_reward
+                reward += 3.0 * distance_improvement  # Reduced from 5.0 to balance punishment
             
-            # Enhanced proximity bonuses with orientation awareness
+            # Extra reward for being very close to game pieces
             if min_piece_distance < 1.5:
-                proximity_bonus = 3.0  # Base proximity bonus
-                if intake_alignment > 0.3:  # Well aligned
-                    proximity_bonus *= 1.5
-                    logger.debug(f"ALIGNED PROXIMITY: bonus multiplied by alignment")
-                reward += proximity_bonus
-                
+                reward += 2.0  # Close proximity bonus
             if min_piece_distance < 0.8:
-                close_proximity_bonus = 4.0  # Base close proximity bonus
-                if intake_alignment > 0.5:  # Very well aligned
-                    close_proximity_bonus *= 2.0
-                    logger.debug(f"VERY ALIGNED CLOSE: bonus doubled")
-                reward += close_proximity_bonus
+                reward += 3.0  # Very close proximity bonus
                 
-            # Penalty for being far from game pieces (but reduced to allow exploration)
-            if min_piece_distance > 6.0:
-                reward -= 0.5  # Reduced penalty to encourage exploration
-            elif min_piece_distance > 10.0:
-                reward -= 1.0
+            # Moderate penalty for being far from game pieces (reduced)
+            if min_piece_distance > 5.0:
+                reward -= 1.0  # Reduced from 2.0
+            elif min_piece_distance > 8.0:
+                reward -= 2.0  # Reduced from 5.0
             
-            # Less penalty for not approaching - allow exploration
-            if min_piece_distance >= prev_min_piece_distance and min_piece_distance > 3.0:
-                reward -= 0.1  # Very reduced penalty
+            # Encourage active searching - slight penalty for not moving toward game pieces
+            if min_piece_distance >= prev_min_piece_distance and min_piece_distance > 2.0:
+                reward -= 0.2  # Reduced from 0.5
             
-            # Reduced penalty for being near reef without game piece
-            if distance_to_nearest_reef < 4.0:  # Larger threshold
-                reef_proximity_penalty = -0.8 * (4.0 - distance_to_nearest_reef)  # Reduced penalty
+            # Additional penalty for being near reef without game piece
+            if distance_to_nearest_reef < 3.0:  # Close to reef
+                reef_proximity_penalty = -1.5 * (3.0 - distance_to_nearest_reef)  # Stronger penalty the closer to reef
                 reward += reef_proximity_penalty
-                logger.debug(f"REEF PROXIMITY PENALTY: {reef_proximity_penalty:.2f}")
+                logger.debug(f"REEF PROXIMITY PENALTY: {reef_proximity_penalty:.2f} for being {distance_to_nearest_reef:.2f}m from reef without piece")
             
             # MASSIVE REWARD for successfully picking up a game piece
             if has_game_piece and not prev_has_game_piece:
-                pickup_reward = 75.0  # Slightly increased
-                # Extra bonus if pickup was well-aligned
-                if prev_intake_alignment > 0.4:
-                    pickup_reward += 25.0
-                    logger.debug(f"ALIGNED PICKUP BONUS: Extra 25.0 for good alignment")
-                reward += pickup_reward
+                reward += 50.0  # Keep this high as it's the main objective
             
-            # Reduced penalty for going toward reef without game piece 
+            # STRONG PENALTY for going toward reef without game piece (waste of time)
             if distance_to_nearest_reef < prev_distance_to_reef:
                 distance_wasted = prev_distance_to_reef - distance_to_nearest_reef
-                reef_penalty = -1.5 * distance_wasted  # Reduced penalty
+                reef_penalty = -3.0 * distance_wasted  # Strong penalty proportional to distance moved toward reef
                 reward += reef_penalty
-                logger.debug(f"REEF WITHOUT PIECE PENALTY: {reef_penalty:.2f}")
+                logger.debug(f"REEF WITHOUT PIECE PENALTY: {reef_penalty:.2f} for moving {distance_wasted:.2f}m toward reef without game piece")
         
         # === PHASE 2: SCORING WITH GAME PIECE ===
         
@@ -977,7 +800,7 @@ class BasicFRCAgent:
     
     def _update_behavior_tracking(self, state: np.ndarray, action: np.ndarray, next_state: np.ndarray):
         """
-        Update tracking variables for stuck detection, oscillation, efficiency monitoring, and exploration.
+        Update tracking variables for stuck detection, oscillation, and efficiency monitoring.
         
         Args:
             state: Previous state
@@ -998,45 +821,6 @@ class BasicFRCAgent:
         # Track energy usage
         energy_this_step = np.sum(np.abs(action[:3]))  # Movement energy
         self.total_energy_used += energy_this_step
-        
-        # === ENHANCED TRACKING FOR EXPLORATION AND INTAKE ===
-        # Update total distance traveled
-        if len(self.position_history) >= 2:
-            prev_pos = np.array(self.position_history[-2])
-            curr_pos = np.array(self.position_history[-1])
-            distance_step = np.linalg.norm(curr_pos - prev_pos)
-            self.total_distance_traveled += distance_step
-        
-        # Track intake alignment progress (if state has orientation info)
-        if len(next_state) >= 26:
-            intake_alignment = next_state[25]
-            has_game_piece = next_state[9] > 0.5
-            
-            # Track when robot is well-aligned with game pieces
-            if not has_game_piece:
-                closest_distance = min(next_state[13], next_state[16])  # Algae and coral distances
-                if closest_distance < 2.0 and intake_alignment > 0.5:
-                    self.intake_facing_history.append((intake_alignment, closest_distance))
-                    if len(self.intake_facing_history) > 20:
-                        self.intake_facing_history.pop(0)
-        
-        # Track successful intake patterns
-        if len(state) >= 10 and len(next_state) >= 10:
-            prev_has_piece = state[9] > 0.5
-            curr_has_piece = next_state[9] > 0.5
-            
-            # If we just picked up a piece, remember the conditions
-            if not prev_has_piece and curr_has_piece:
-                if len(state) >= 26:
-                    prev_alignment = state[25]
-                    intake_command = action[5] if len(action) > 5 else 0.0
-                    self.intake_success_memory.append({
-                        'alignment': prev_alignment,
-                        'intake_command': intake_command,
-                        'distance': min(state[13], state[16])
-                    })
-                    logger.info(f"SUCCESSFUL PICKUP: alignment={prev_alignment:.2f}, command={intake_command:.2f}")
-    
     
     def _detect_stuck_behavior(self, state: np.ndarray, next_state: np.ndarray) -> float:
         """
@@ -1103,13 +887,15 @@ class BasicFRCAgent:
         
         # Only penalize if there's a significant command but absolutely no movement
         if commanded_movement > 0.5 and position_change < 0.001:  # Very strict thresholds
-            penalty -= 0.5  # Strong penalty for no movement
+            penalty -= 0.1  # Tiny penalty
+            if self._stuck_debug_counter % 20 == 0:
+                logger.debug(f"NO MOVEMENT: commanded={commanded_movement:.3f}, actual={position_change:.6f}")
         
         return penalty
     
     def _detect_oscillation(self) -> float:
         """
-        Detect oscillation behavior - refined with adaptive thresholds.
+        Improved oscillation detection that's less prone to false positives.
         
         Returns:
             Penalty value (negative) for oscillation
@@ -1168,6 +954,8 @@ class BasicFRCAgent:
                 logger.debug(f"REPEATING PATTERN DETECTED: similarity={pattern_similarity:.2f}")
         
         return penalty
+        
+        return penalty
     
     def _detect_inefficiency(self, state: np.ndarray, action: np.ndarray, next_state: np.ndarray) -> float:
         """
@@ -1202,150 +990,88 @@ class BasicFRCAgent:
         self.total_energy_used = 0.0
         self.steps_without_progress = 0
         self.last_meaningful_position = None
-        
-        # Reset enhanced tracking
-        self.total_distance_traveled = 0.0
-        self.area_coverage_bonus = 0.0
-        self.visited_positions.clear()
-        self.intake_facing_history.clear()
-        self.intake_success_memory.clear()
-        
-        logger.debug("Enhanced behavior tracking variables reset for new episode")
-        self.visited_positions.clear()
-        self.intake_facing_history.clear()
-        self.intake_success_memory.clear()
-        
-        logger.debug("Enhanced behavior tracking variables reset for new episode")
+        logger.debug("Behavior tracking variables reset for new episode")
     
-    def get_exploration_stats(self) -> Dict:
+    def debug_robot_responsiveness(self):
         """
-        Get statistics about robot exploration and movement.
-        
-        Returns:
-            Dictionary with exploration metrics
+        Comprehensive debug method to check if the robot is responding to commands.
         """
-        return {
-            'total_distance': self.total_distance_traveled,
-            'areas_visited': len(self.visited_positions),
-            'stuck_steps': self.consecutive_stuck_steps,
-            'average_movement': np.mean([
-                np.linalg.norm(np.array(self.position_history[i+1]) - np.array(self.position_history[i]))
-                for i in range(len(self.position_history) - 1)
-            ]) if len(self.position_history) > 1 else 0.0
-        }
-    
-    def get_smart_action_for_game_piece(self, state: np.ndarray) -> List[float]:
-        """
-        Generate a smart action that considers orientation for game piece acquisition.
-        This is used as an alternative to pure random actions.
+        if not self.connected:
+            logger.error("Not connected to robot")
+            return False
         
-        Args:
-            state: Current robot state
-            
-        Returns:
-            Action that balances movement and orientation for game piece pickup
-        """
-        if len(state) < 27:
-            return self.random_policy()  # Fallback to random if state incomplete
+        logger.info("=== ROBOT RESPONSIVENESS DEBUG ===")
         
-        pose_x, pose_y = state[0], state[1]
-        pose_rotation = state[2]
-        has_game_piece = state[9] > 0.5
+        # Test 1: Check NetworkTables connection
+        logger.info("Test 1: NetworkTables Connection")
+        logger.info(f"  Instance connected: {self.inst.isConnected()}")
+        logger.info(f"  Control table exists: {self.control_table is not None}")
+        logger.info(f"  State table exists: {self.state_table is not None}")
         
-        if has_game_piece:
-            return self.random_policy()  # Use random when already have piece
+        if self.control_table:
+            logger.info(f"  Control table keys: {list(self.control_table.getKeys())}")
+        if self.state_table:
+            logger.info(f"  State table keys: {list(self.state_table.getKeys())}")
         
-        # Get game piece information
-        closest_algae_dist = state[13]
-        closest_algae_x = state[14]
-        closest_algae_y = state[15]
-        closest_coral_dist = state[16]
-        closest_coral_x = state[17]
-        closest_coral_y = state[18]
-        intake_alignment = state[25]
+        # Test 2: Check initial position
+        logger.info("\nTest 2: Initial Robot State")
+        initial_state = self.get_state()
+        initial_pos = (initial_state[0], initial_state[1])
+        logger.info(f"  Initial position: ({initial_pos[0]:.3f}, {initial_pos[1]:.3f})")
+        logger.info(f"  Initial velocity: ({initial_state[3]:.3f}, {initial_state[4]:.3f})")
         
-        # Choose closest game piece
-        if closest_algae_dist < closest_coral_dist:
-            target_x, target_y = closest_algae_x, closest_algae_y
-            target_distance = closest_algae_dist
+        # Test 3: Send test command and check response
+        logger.info("\nTest 3: Command Response Test")
+        logger.info("  Sending forward command (1.0 m/s)...")
+        
+        # Send command
+        self.send_action([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        time.sleep(0.5)  # Wait for command to take effect
+        
+        # Check if position changed
+        mid_state = self.get_state()
+        mid_pos = (mid_state[0], mid_state[1])
+        position_change = np.linalg.norm(np.array(mid_pos) - np.array(initial_pos))
+        
+        logger.info(f"  After 0.5s: position=({mid_pos[0]:.3f}, {mid_pos[1]:.3f})")
+        logger.info(f"  Position change: {position_change:.4f} meters")
+        logger.info(f"  Velocity: ({mid_state[3]:.3f}, {mid_state[4]:.3f})")
+        
+        # Test 4: Continue for longer
+        logger.info("\nTest 4: Extended Movement Test")
+        time.sleep(1.0)  # Continue moving
+        
+        final_state = self.get_state()
+        final_pos = (final_state[0], final_state[1])
+        total_change = np.linalg.norm(np.array(final_pos) - np.array(initial_pos))
+        
+        logger.info(f"  After 1.5s total: position=({final_pos[0]:.3f}, {final_pos[1]:.3f})")
+        logger.info(f"  Total position change: {total_change:.4f} meters")
+        logger.info(f"  Final velocity: ({final_state[3]:.3f}, {final_state[4]:.3f})")
+        
+        # Stop robot
+        logger.info("\nTest 5: Stop Command")
+        self.send_action([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        time.sleep(0.5)
+        
+        stop_state = self.get_state()
+        logger.info(f"  After stop: velocity=({stop_state[3]:.3f}, {stop_state[4]:.3f})")
+        
+        # Analysis
+        logger.info("\n=== ANALYSIS ===")
+        if total_change < 0.01:
+            logger.error("❌ ROBOT NOT MOVING: Commands may not be reaching robot or robot may be disabled")
+            logger.error("   Check: 1) Robot code is running, 2) Robot is enabled, 3) NetworkTables keys match")
+        elif total_change < 0.5:
+            logger.warning("⚠️  LIMITED MOVEMENT: Robot moving but much slower than expected")
+            logger.warning("   Check: 1) Action scaling in robot code, 2) Robot safety limits")
         else:
-            target_x, target_y = closest_coral_x, closest_coral_y
-            target_distance = closest_coral_dist
+            logger.info("✅ ROBOT RESPONSIVE: Commands are being processed correctly")
         
-        # Start with random action as base
-        action = self.random_policy()
+        if abs(final_state[3]) > 0.1 or abs(final_state[4]) > 0.1:
+            logger.warning("⚠️  ROBOT NOT STOPPING: Velocity should be near zero after stop command")
         
-        # If close to a game piece, focus on alignment and intake
-        if target_distance < 2.0:
-            # Calculate direction to game piece
-            dx = target_x - pose_x
-            dy = target_y - pose_y
-            
-            # If well aligned, move forward and activate intake
-            if intake_alignment > 0.6:
-                # Move toward game piece
-                action[0] = np.clip(dx * 2.0, -2.0, 2.0)  # Velocity X
-                action[1] = np.clip(dy * 2.0, -2.0, 2.0)  # Velocity Y
-                action[2] = 0.0  # No rotation needed
-                action[5] = 1.0  # Activate intake
-            else:
-                # Need to rotate to face game piece
-                target_angle = np.arctan2(dy, dx)
-                angle_diff = target_angle - pose_rotation
-                
-                # Normalize angle difference
-                while angle_diff > np.pi:
-                    angle_diff -= 2 * np.pi
-                while angle_diff < -np.pi:
-                    angle_diff += 2 * np.pi
-                
-                # Rotate to face piece
-                action[0] = dx * 0.5  # Slow approach
-                action[1] = dy * 0.5
-                action[2] = np.clip(angle_diff * 3.0, -4.0, 4.0)  # Angular velocity
-                action[5] = 0.5  # Moderate intake
-        
-        return action
-    
-    def _calculate_intake_alignment(self, robot_x: float, robot_y: float, robot_heading: float,
-                                   piece_x: float, piece_y: float) -> float:
-        """
-        Calculate how well the robot is oriented to intake a game piece.
-        The intake is assumed to be at the front of the robot.
-        
-        Args:
-            robot_x, robot_y: Robot position
-            robot_heading: Robot heading in radians
-            piece_x, piece_y: Game piece position
-            
-        Returns:
-            Alignment value from -1 (facing away) to 1 (facing directly toward)
-        """
-        # Vector from robot to game piece
-        dx = piece_x - robot_x
-        dy = piece_y - robot_y
-        
-        # If piece is very close to robot, consider it well aligned
-        distance = np.sqrt(dx*dx + dy*dy)
-        if distance < 0.1:
-            return 1.0
-        
-        # Angle from robot to game piece
-        piece_angle = np.arctan2(dy, dx)
-        
-        # Difference between robot heading and direction to piece
-        angle_diff = piece_angle - robot_heading
-        
-        # Normalize angle difference to [-pi, pi]
-        while angle_diff > np.pi:
-            angle_diff -= 2 * np.pi
-        while angle_diff < -np.pi:
-            angle_diff += 2 * np.pi
-        
-        # Convert to alignment score: cos(angle_diff) gives 1 when aligned, -1 when opposite
-        alignment = np.cos(angle_diff)
-        
-        return alignment
+        return total_change > 0.01
 
     def detect_wall_collision(self, state: np.ndarray, action: np.ndarray, next_state: np.ndarray) -> bool:
         """
@@ -1412,7 +1138,7 @@ class BasicFRCAgent:
             return True
         
         return False
-
+    
     def get_wall_escape_action(self, state: np.ndarray) -> List[float]:
         """
         Get a gentle action to escape from wall collision.
@@ -1459,6 +1185,7 @@ class BasicFRCAgent:
                 escape_y = 0.6 * (dy / magnitude)
         
         # Add small random component to avoid getting stuck in exact same pattern
+        import random
         escape_x += random.uniform(-0.1, 0.1)
         escape_y += random.uniform(-0.1, 0.1)
         
@@ -1470,267 +1197,7 @@ class BasicFRCAgent:
         
         return [escape_x, escape_y, 0.0, 0.0, 0.0, 0.0]
     
-    def reset_environment(self, timeout: float = 5.0) -> bool:
-        """
-        Request a full environment reset from the simulation and wait for completion.
-        Args:
-            timeout: Maximum time to wait for reset (seconds)
-        Returns:
-            True if reset completed successfully, False otherwise
-        """
-        if not self.connected or not self.control_table or not self.state_table:
-            logger.error("Not connected to robot or NetworkTables")
-            return False
-        try:
-            # Clear any previous reset completed flag
-            self.state_table.putBoolean("reset_completed", False)
-            self.state_table.putBoolean("reset_in_progress", False)
-            # Request reset
-            self.control_table.putBoolean("reset_environment", True)
-            logger.info("Requested environment reset via NetworkTables")
-            # Wait for reset to start
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                in_progress = self.state_table.getBoolean("reset_in_progress", False)
-                completed = self.state_table.getBoolean("reset_completed", False)
-                if in_progress:
-                    logger.info("Environment reset in progress...")
-                if completed:
-                    logger.info("Environment reset completed!")
-                    # Clear the completed flag for next time
-                    self.state_table.putBoolean("reset_completed", False)
-                    return True
-                time.sleep(0.05)
-            logger.error("Environment reset timed out after %.1f seconds", timeout)
-            return False
-        except Exception as e:
-            logger.error(f"Error during environment reset: {e}")
-            return False
 
-    def run_training_episode(self, max_steps: int = 1000, max_time: float = 30.0) -> Dict:
-        """
-        Run a single training episode with automatic reset and reward tracking.
-        
-        Args:
-            max_steps: Maximum number of steps per episode
-            max_time: Maximum episode duration in seconds
-            
-        Returns:
-            Episode statistics dictionary
-        """
-        if not self.connected:
-            logger.error("Not connected to robot - cannot run training episode")
-            return {}
-        
-        # Reset environment at start of episode
-        logger.info("Starting new training episode...")
-        if not self.reset_environment():
-            logger.error("Failed to reset environment - aborting episode")
-            return {}
-        
-        # Reset behavior tracking for new episode
-        self.reset_behavior_tracking()
-        
-        episode_stats = {
-            'total_reward': 0.0,
-            'steps': 0,
-            'game_pieces_collected': 0,
-            'successful_scores': 0,
-            'exploration_distance': 0.0,
-            'episode_complete': False
-        }
-        
-        start_time = time.time()
-        prev_state = self.get_state()
-        prev_score = prev_state[21] if len(prev_state) > 21 else 0
-        prev_has_piece = prev_state[9] > 0.5 if len(prev_state) > 9 else False
-        
-        try:
-            for step in range(max_steps):
-                # Check time limit
-                if (time.time() - start_time) > max_time:
-                    logger.info(f"Episode ended due to time limit ({max_time}s)")
-                    break
-                
-                # Get current state
-                current_state = self.get_state()
-                
-                # Select and execute action
-                action = self.select_action(current_state)
-                self.send_action(action)
-                
-                # Small delay for physics simulation
-                time.sleep(0.02)  # 50Hz control rate
-                
-                # Get next state
-                next_state = self.get_state()
-                
-                # Calculate reward
-                reward = self.calculate_reward(prev_state, np.array(action), next_state)
-                
-                # Check for episode completion conditions
-                done = False
-                
-                # Track statistics
-                episode_stats['steps'] += 1
-                episode_stats['total_reward'] += reward
-                
-                # Track game piece collection
-                current_has_piece = next_state[9] > 0.5 if len(next_state) > 9 else False
-                if current_has_piece and not prev_has_piece:
-                    episode_stats['game_pieces_collected'] += 1
-                    logger.info(f"Game piece collected! Total: {episode_stats['game_pieces_collected']}")
-                
-                # Track successful scoring
-                current_score = next_state[21] if len(next_state) > 21 else 0
-                if current_score > prev_score:
-                    episode_stats['successful_scores'] += 1
-                    logger.info(f"Successful score! Total: {episode_stats['successful_scores']}")
-                    prev_score = current_score
-                
-                # Store experience for learning
-                self.remember(prev_state, action, reward, next_state, done)
-                
-                # Train the model if enough experience
-                if len(self.memory) > self.batch_size:
-                    self.optimize_model()
-                
-                # Update for next iteration
-                prev_state = next_state
-                prev_has_piece = current_has_piece
-                
-                # Early termination conditions
-                if episode_stats['successful_scores'] >= 5:  # Episode goal achieved
-                    logger.info("Episode completed successfully - goal achieved!")
-                    episode_stats['episode_complete'] = True
-                    done = True
-                    break
-                
-                # Check if stuck for too long
-                if self.consecutive_stuck_steps > 100:
-                    logger.info("Episode ended due to excessive stuck behavior")
-                    break
-        
-        except KeyboardInterrupt:
-            logger.info("Episode interrupted by user")
-        
-        finally:
-            # Stop robot
-            self.send_action([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-            
-            # Get final exploration stats
-            exploration_stats = self.get_exploration_stats()
-            episode_stats['exploration_distance'] = exploration_stats['total_distance']
-            
-            # Calculate final statistics
-            episode_stats['average_reward'] = (episode_stats['total_reward'] / 
-                                             max(episode_stats['steps'], 1))
-            episode_stats['duration'] = time.time() - start_time
-            
-            logger.info(f"Episode completed: {episode_stats}")
-        
-        return episode_stats
-
-    def run_training_session(self, num_episodes: int = 100, save_interval: int = 10) -> List[Dict]:
-        """
-        Run multiple training episodes with automatic environment resets.
-        
-        Args:
-            num_episodes: Number of episodes to run
-            save_interval: Save model every N episodes
-            
-        Returns:
-            List of episode statistics
-        """
-        if not self.connected:
-            logger.error("Not connected to robot - cannot run training session")
-            return []
-        
-        logger.info(f"Starting training session: {num_episodes} episodes")
-        all_episode_stats = []
-        
-        try:
-            for episode in range(num_episodes):
-                logger.info(f"\n=== EPISODE {episode + 1}/{num_episodes} ===")
-                
-                # Run single episode
-                episode_stats = self.run_training_episode()
-                episode_stats['episode_number'] = episode + 1
-                all_episode_stats.append(episode_stats)
-                
-                # Print episode summary
-                logger.info(f"Episode {episode + 1} Summary:")
-                logger.info(f"  Reward: {episode_stats['total_reward']:.2f}")
-                logger.info(f"  Steps: {episode_stats['steps']}")
-                logger.info(f"  Pieces collected: {episode_stats['game_pieces_collected']}")
-                logger.info(f"  Successful scores: {episode_stats['successful_scores']}")
-                logger.info(f"  Exploration distance: {episode_stats['exploration_distance']:.2f}m")
-                logger.info(f"  Episode complete: {episode_stats['episode_complete']}")
-                
-                # Save model periodically
-                if (episode + 1) % save_interval == 0:
-                    try:
-                        torch.save(self.policy_net.state_dict(), f'frc_agent_episode_{episode + 1}.pth')
-                        logger.info(f"Model saved at episode {episode + 1}")
-                    except Exception as e:
-                        logger.error(f"Failed to save model: {e}")
-                
-                # Small break between episodes
-                time.sleep(1.0)
-        
-        except KeyboardInterrupt:
-            logger.info("Training session interrupted by user")
-        
-        # Save final model
-        try:
-            torch.save(self.policy_net.state_dict(), 'frc_agent_final.pth')
-            logger.info("Final model saved")
-        except Exception as e:
-            logger.error(f"Failed to save final model: {e}")
-        
-        # Print training session summary
-        if all_episode_stats:
-            total_rewards = [ep['total_reward'] for ep in all_episode_stats]
-            total_pieces = sum(ep['game_pieces_collected'] for ep in all_episode_stats)
-            total_scores = sum(ep['successful_scores'] for ep in all_episode_stats)
-            
-            logger.info(f"\n=== TRAINING SESSION COMPLETE ===")
-            logger.info(f"Episodes completed: {len(all_episode_stats)}")
-            logger.info(f"Average reward: {np.mean(total_rewards):.2f}")
-            logger.info(f"Best episode reward: {max(total_rewards):.2f}")
-            logger.info(f"Total game pieces collected: {total_pieces}")
-            logger.info(f"Total successful scores: {total_scores}")
-            logger.info(f"Episodes completed successfully: {sum(1 for ep in all_episode_stats if ep['episode_complete'])}")
-        
-        return all_episode_stats
-
-    def quick_training_demo(self, episodes: int = 5):
-        """
-        Run a quick training demonstration showing the reset functionality.
-        
-        Args:
-            episodes: Number of demo episodes
-        """
-        logger.info(f"Running quick training demo with {episodes} episodes")
-        
-        for i in range(episodes):
-            logger.info(f"\n--- Demo Episode {i + 1} ---")
-            
-            # Show reset in action
-            logger.info("Resetting environment...")
-            if self.reset_environment():
-                logger.info("✓ Environment reset successful")
-                
-                # Run short episode
-                stats = self.run_training_episode(max_steps=200, max_time=10.0)
-                logger.info(f"Episode result: {stats['total_reward']:.1f} reward in {stats['steps']} steps")
-            else:
-                logger.error("✗ Environment reset failed")
-                break
-            
-            time.sleep(2.0)  # Pause between episodes
-        
-        logger.info("Training demo complete!")
 def main():
     """Main function for testing the agent."""
     print("FRC Reinforcement Learning Agent")
@@ -1759,7 +1226,7 @@ def main():
                 episodes = int(input("Enter number of episodes to train: ").strip())
                 for ep in range(episodes):
                     print(f"Episode {ep+1}/{episodes}")
-                    agent.reset_behavior_tracking()  # Reset exploration tracking
+                    agent.reset_behavior_tracking()
                     state = agent.get_state()
                     total_reward = 0.0
                     duration = 10.0
@@ -1776,15 +1243,7 @@ def main():
                         agent.remember(state, action, reward, next_state, False)
                         agent.optimize_model()
                         state = next_state
-                    
-                    # Enhanced episode summary
-                    exploration_stats = agent.get_exploration_stats()
-                    print(f"Episode {ep+1} completed:")
-                    print(f"  Total reward: {total_reward:.2f}")
-                    print(f"  Distance traveled: {exploration_stats['total_distance']:.2f}m")
-                    print(f"  Areas visited: {exploration_stats['areas_visited']}")
-                    if agent.intake_success_memory:
-                        print(f"  Successful pickups: {len(agent.intake_success_memory)}")
+                    print(f"Episode {ep+1} total reward: {total_reward:.2f}")
                 print("Training completed.")
             else:
                 print("Invalid choice, exiting.")

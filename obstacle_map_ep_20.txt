@@ -1,0 +1,87 @@
+# Obstacle Map - 166x83
+# Resolution: 0.1m per cell
+# Values: 1=obstacle, 0=unknown, -1=free
+
+                                                                                                                                                                      
+                            X  X                                                                                                                                      
+                         X X XX  XX                                                                                                                                   
+             XXXXX         X   X X  X                                                                                                                                 
+              X  X   XXXXX  X XXXXX X                                                                                                                                 
+           XXX    XXXXXX XXXXXXXX  X                                                                                                                                  
+          XXXX  XXXXX        XXXXXX                                                                                                                                   
+         XX X XXX     XXXX                                                                                                                                            
+        XXXX X     XXXXXXXXXXX                                                                                                                                        
+       XXXXXXXX  XXXXXX X   XX .                                                                                                                                      
+      X  X X XXXXXX      X  XX                                                                                                                                        
+           X XXXXX X     X X X .                                                                                                                                      
+     X   .XXXXXXXXX X  X   X                                                                                                                                          
+    X  XX  XXXXX  X  XX X X  X X                                                                                                                                      
+      X  XXXXX  X   X XX     XXX                                                                                                                                      
+    X  XX XXX     X  XXXX    XX                                                                                                                                       
+   XX   X XX   XX       XXX XXX                                                                                                                                       
+  XX   X XXX.. X   X        XX   . .                                                                                                                                  
+ X X XX X  X . X  XXX X  X   XX  X  ..                                                                                                                                
+     X      X X  X X XX   XXX XX  .XX..                                                                                                                               
+  X  X  XXX X   .X X    XXXX X   X..X  .                                                                                                                              
+   XXXXXXX X XXXX..   XXXXXX X X . X  .                                                                                                                               
+   XX   XXX    XXX ..XXXXX X  XXX XX X..                                                                                                                              
+    X XX XXXX XXX X X ..X  XXXXXX .  X .                                                                                                                              
+  X  XXX   XX XXXX.X X   XX X  XXXXX X                                                                                                                                
+    XXXX X     XXX  X      XXXXX  X  X                                                                                                                                
+ XX XX X   X XX X    X  X   XXX X XXX                                                                                                                                 
+    XX XXX        X X X  XX   XXX X XXX                                                                                                                               
+  X XX  X          X  XX X      . XXXX .                                                                                                                              
+    XX X            XX X   X X XX  X...                                                                                                                               
+    XXX              XXX X. X  XX                                                                                                                                     
+    XXX               .  XXX . X                                                                                                                                      
+     XX X               XXXX    . XXX                                                                                                                                 
+     XXXX                X XX X   X                                                                                                                                   
+       XX                    XXXX X                                                                                                                                   
+     X X                       XXX                                                                                                                                    
+      XX X               X XXX X                                                                                                                                      
+     X   X                 X  X                                                                                                                                       
+      X   X                 X  X                                                                                                                                      
+     XXX                   X X  .                                                                                                                                     
+       X   X           X  XX     X                                                                                                                                    
+     X     X                X  XX X                                                                                                                                   
+     X   X X          X   XXX  XXX                                                                                                                                    
+  XXXX  X                 XXX  X                                                                                                                                      
+  X XX  X XX         X     XXXX                                                                                                                                       
+     X    X              X  X                                                                                                                                         
+     X   XX         X    XX                                                                                                                                           
+     X X X                   XX . X                                                                                                                                   
+  XX XX XX                        X                                                                                                                                   
+   XXX             X    XXXXXX XX X .                                                                                                                                 
+  XX X  XX  X X X XX XXXXX    XXXX   .                                                                                                                                
+  X    X  XX  XX  X X       XX X XXXX                                                                                                                                 
+  X   XXX X                 X XXXXX                                                                                                                                   
+ XX  XXXX                    X XXX                                                                                                                                    
+  X  XXXX        X           X                                                                                                                                        
+  X  X XX       XX          X                                                                                                                                         
+ X   X X       X                                                                                                                                                      
+  X  X X      XX                                                                                                                                                      
+  XX X X     X            X                                                                                                                                           
+  XX  XX    X                                                                                                                                                         
+    XX X   XX                                                                                                                                                         
+  X  XXX   X                                                                                                                                                          
+ X XX XX   X          X                                                                                                                                               
+ XX  XXX   X         X                                                                                                                                                
+  X X XX   X                                                                                                                                                          
+ XX X XX    X  X                                                                                                                                                      
+  XXX XXX   . XXXX                                                                                                                                                    
+   XXXX X                                                                                                                                                             
+      XXX                                                                                                                                                             
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      
+                                                                                                                                                                      

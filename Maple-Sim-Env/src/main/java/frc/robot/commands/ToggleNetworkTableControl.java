@@ -174,7 +174,7 @@ public class ToggleNetworkTableControl extends Command {
  * State Topics (RL agent reads from these):
  * - /RL_State/pose_x (double)
  * - /RL_State/pose_y (double)
- * - /RL_State/pose_rotation (double)
+ * - //pose_rotation (double)
  * - /RL_State/velocity_x (double)
  * - /RL_State/velocity_y (double)
  * - /RL_State/angular_velocity (double)
