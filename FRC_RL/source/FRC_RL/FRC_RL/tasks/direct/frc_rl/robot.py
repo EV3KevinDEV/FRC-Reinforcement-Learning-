@@ -8,7 +8,7 @@ import math
 ROBOT_CFG = ArticulationCfg(
    debug_vis=True,
    spawn=sim_utils.UsdFileCfg(
-        usd_path=f"/home/kevin/Desktop/MasterRSCH_Suck_V2.usd"
+        usd_path=f"/source/FRC_RL/assets/MasterRSCH_Suck_V2.usd"
    ),
    # Add proper init_state to prevent tensor shape issues in acceleration calculation
    init_state=ArticulationCfg.InitialStateCfg(
